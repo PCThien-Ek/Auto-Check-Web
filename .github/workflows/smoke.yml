@@ -1,74 +1,74 @@
 name: Web Smoke (Playwright + Pytest)
 
 on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch: {}
+  workflow_dispatch:        # cho phép bấm Run workflow bằng tay
   schedule:
-    - cron: "0 */4 * * *"   # chạy 4 giờ/lần
-
-concurrency:
-  group: smoke
-  cancel-in-progress: true
+    - cron: '5 */4 * * *'   # chạy 4 giờ/lần (tùy chỉnh)
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
+    env:
+      BASE_URL: ${{ secrets.BASE_URL }}
+      LOGIN_PATH: ${{ secrets.LOGIN_PATH }}
+      LOGIN_EMAIL: ${{ secrets.LOGIN_EMAIL }}
+      LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
+
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
+          cache: 'pip'
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: pip-${{ runner.os }}-
-
-      - name: Install deps + Playwright
+      - name: Install Python deps
         run: |
-          python -m pip install -U pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m playwright install --with-deps
 
-      - name: Write .env from secrets
-        shell: bash
-        run: |
-          cat > .env <<'ENVV'
-          BASE_URL=${{ secrets.BASE_URL }}
-          LOGIN_PATH=${{ secrets.LOGIN_PATH }}
-          LOGIN_EMAIL=${{ secrets.LOGIN_EMAIL }}
-          LOGIN_PASSWORD=${{ secrets.LOGIN_PASSWORD }}
-          ENVV
+      # Cài browsers + system deps + headless Xvfb cho Playwright
+      - name: Install Playwright browsers
+        uses: microsoft/playwright-github-action@v1
 
-      - name: Restore auth state (optional)
+      # (Tùy chọn) Khôi phục auth_state.json nếu bạn có secret AUTH_STATE_B64
+      - name: Restore auth_state.json
         if: ${{ secrets.AUTH_STATE_B64 != '' }}
-        run: |
-          python - <<'PY'
-          import os,base64,sys
-          b64=os.environ.get('AUTH_STATE_B64','')
-          if b64:
-              open('auth_state.json','wb').write(base64.b64decode(b64))
-          PY
         env:
           AUTH_STATE_B64: ${{ secrets.AUTH_STATE_B64 }}
+        run: |
+          python - <<'PY'
+          import os, base64, pathlib
+          b = os.environ.get('AUTH_STATE_B64','').strip()
+          if b:
+            pathlib.Path('auth_state.json').write_bytes(base64.b64decode(b))
+          else:
+            print("No AUTH_STATE_B64 provided.")
+          PY
 
       - name: Run tests
-        run: pytest -q || true    # vẫn cho job đi tiếp để upload report
+        id: smoke
+        run: |
+          pytest -q
+        continue-on-error: true   # luôn chạy bước upload report
 
-      - name: Upload report
+      - name: Upload smoke report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: smoke-report
           path: |
-            report/smoke.html
-            report/login_failure.png
+            report/**
+            *.png
+            playwright-report/**
           if-no-files-found: warn
+          retention-days: 7
+
+      # Nếu pytest fail, job sẽ báo đỏ (sau khi đã upload report)
+      - name: Fail job when tests failed
+        if: steps.smoke.outcome != 'success'
+        run: exit 1
