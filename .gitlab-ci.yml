@@ -1,28 +1,43 @@
-stages: [test]
+image: mcr.microsoft.com/playwright/python:v1.46.0-jammy
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+stages:
+  - test
 
 smoke:
   stage: test
-  tags: [win-shell]   # PHẢI trùng với tag của runner khi bạn register
-  # Cài môi trường, browsers và khôi phục .env + auth_state.json
+  # NOTE: Dùng shared runner thì KHÔNG cần tags.
+  cache:
+    paths:
+      - .cache/pip
+
   before_script:
-    # Tạo venv và cài dependencies + playwright browsers
-    - 'powershell -Command "python -m venv venv"'
-    - 'powershell -Command ".\\venv\\Scripts\\Activate.ps1; python -m pip install -U pip; pip install -r requirements.txt; python -m playwright install"'
+    - python --version
+    - pip install -U pip
+    - pip install -r requirements.txt
 
-    # Tạo file .env từ CI Variables (KHÔNG in ra log để tránh lộ secret)
-    - 'powershell -Command "Set-Content -Path .env -Value (\\"BASE_URL=$env:BASE_URL`nLOGIN_PATH=$env:LOGIN_PATH`nLOGIN_EMAIL=$env:LOGIN_EMAIL`nLOGIN_PASSWORD=$env:LOGIN_PASSWORD\\")"'
+    # Tạo .env từ CI variables
+    - |
+      printf "BASE_URL=%s\nLOGIN_PATH=%s\nLOGIN_EMAIL=%s\nLOGIN_PASSWORD=%s\n" \
+        "$BASE_URL" "$LOGIN_PATH" "$LOGIN_EMAIL" "$LOGIN_PASSWORD" > .env
 
-    # Giải mã AUTH_STATE_B64 (nếu có) thành auth_state.json để dùng đăng nhập sẵn
-    - 'powershell -Command "if ($env:AUTH_STATE_B64) { [IO.File]::WriteAllBytes(\\"auth_state.json\\", [Convert]::FromBase64String($env:AUTH_STATE_B64)); Write-Host (\\"auth_state.json restored (bytes=\\" + (Get-Item auth_state.json).Length + \\")\\"); } else { Write-Host \\"AUTH_STATE_B64 not set - will login with email/password\\" }"'
+    # Giải mã AUTH_STATE_B64 -> auth_state.json (nếu có)
+    - |
+      if [ -n "$AUTH_STATE_B64" ]; then
+        printf "%s" "$AUTH_STATE_B64" | base64 -d > auth_state.json
+        echo "auth_state.json restored (bytes=$(wc -c < auth_state.json))"
+      else
+        echo "AUTH_STATE_B64 not set - will login with email/password"
+      fi
 
-  # Chạy test
   script:
-    - 'powershell -Command ".\\venv\\Scripts\\Activate.ps1; pytest"'
+    - pytest
 
-  # Lưu report để tải về xem
   artifacts:
     when: always
     expire_in: 7 days
     paths:
       - report/
-      - auth_state.json   # chứa token/session. Nếu không muốn lưu ra artifact, hãy xoá dòng này.
+    # Không lưu auth_state.json để tránh lộ token
