@@ -25,7 +25,6 @@ def login_path():
 
 @pytest.fixture(scope="session")
 def creds():
-    # fallback sang USERNAME/PASSWORD nếu đã lỡ dùng tên cũ
     email = os.getenv("LOGIN_EMAIL") or (os.getenv("USERNAME") if "@" in (os.getenv("USERNAME") or "") else None)
     pwd   = os.getenv("LOGIN_PASSWORD") or os.getenv("PASSWORD")
     return {"user": email, "pwd": pwd}
@@ -38,8 +37,10 @@ def logged_page(browser, base_url, login_path, creds):
         page = ctx.new_page()
         page.goto(urljoin(base_url + "/", "en/store"), wait_until="domcontentloaded")
         if not _modal_visible(page):   # modal không hiện -> coi như đã login
-            yield page
-            ctx.close()
+            try:
+                yield page
+            finally:
+                ctx.close()
             return
         ctx.close()  # state hết hạn -> rơi xuống nhánh 2
 
@@ -49,7 +50,7 @@ def logged_page(browser, base_url, login_path, creds):
     page.goto(urljoin(base_url + "/", login_path.lstrip("/")), wait_until="domcontentloaded")
 
     scope = page.locator('[role="dialog"][aria-modal="true"] .ant-modal-content').first
-    if not scope.count():
+    if scope.count() == 0:
         scope = page  # fallback nếu form không nằm trong modal
 
     # Email
@@ -87,7 +88,10 @@ def logged_page(browser, base_url, login_path, creds):
         page.screenshot(path="report/login_failure.png", full_page=True)
         raise AssertionError(f"Login có vẻ chưa thành công. URL: {page.url} (xem report/login_failure.png)")
 
-    # Lưu state cho lần chạy sau/CI
+    # Lưu state cho lần sau/CI
     page.context.storage_state(path=AUTH_STATE_PATH)
-    yield page
-    ctx.close()
+
+    try:
+        yield page
+    finally:
+        ctx.close()

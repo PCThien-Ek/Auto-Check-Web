@@ -3,3 +3,8 @@ auth_state.json
 report/
 __pycache__/
 .pytest_cache/
+AUTH_STATE_B64.txt
+auth_state.json
+.env
+report/
+playwright-report/
