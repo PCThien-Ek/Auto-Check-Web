@@ -1,43 +1,37 @@
-image: mcr.microsoft.com/playwright/python:v1.46.0-jammy
+stages: [test]
 
-variables:
-  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
-
-stages:
-  - test
+# (khuyến nghị) job chẩn đoán nhanh
+diag:
+  stage: test
+  tags: [win-shell]
+  script:
+    - '$ErrorActionPreference="Stop"'
+    - 'Write-Host "USER: $env:USERNAME@$env:USERDOMAIN"'
+    - 'Write-Host "PATH: $env:PATH"'
+    - 'where.exe python'
+    - 'python -V; pip -V'
 
 smoke:
   stage: test
   tags: [win-shell]
-  cache:
-    paths:
-      - .cache/pip
-
   before_script:
-    - python --version
-    - pip install -U pip
-    - pip install -r requirements.txt
-
-    # Tạo .env từ CI variables
-    - |
-      printf "BASE_URL=%s\nLOGIN_PATH=%s\nLOGIN_EMAIL=%s\nLOGIN_PASSWORD=%s\n" \
-        "$BASE_URL" "$LOGIN_PATH" "$LOGIN_EMAIL" "$LOGIN_PASSWORD" > .env
-
-    # Giải mã AUTH_STATE_B64 -> auth_state.json (nếu có)
-    - |
-      if [ -n "$AUTH_STATE_B64" ]; then
-        printf "%s" "$AUTH_STATE_B64" | base64 -d > auth_state.json
-        echo "auth_state.json restored (bytes=$(wc -c < auth_state.json))"
-      else
-        echo "AUTH_STATE_B64 not set - will login with email/password"
-      fi
-
+    - '$ErrorActionPreference="Stop"'
+    # tạo sẵn thư mục report để tránh cảnh báo
+    - 'if (!(Test-Path report)) { New-Item -ItemType Directory -Path report | Out-Null }'
+    # khôi phục state nếu dùng AUTH_STATE_B64
+    - 'if ($env:AUTH_STATE_B64) { [IO.File]::WriteAllBytes("auth_state.json",[Convert]::FromBase64String($env:AUTH_STATE_B64)) }'
+    # cài deps + browsers
+    - 'python -m pip install -U pip'
+    - 'python -m pip install -r requirements.txt'
+    - 'python -m playwright install chromium'
   script:
-    - pytest
-
+    # ép pytest tạo html report, kể cả khi fail
+    - 'pytest --maxfail=1 --html=report\smoke.html --self-contained-html -q'
+  # nếu vì lý do nào đó vẫn chưa có report, tạo file giả để upload
+  after_script:
+    - 'if (!(Test-Path report\smoke.html)) { "No report generated" | Out-File report\_no_report.txt -Encoding utf8 }'
   artifacts:
     when: always
     expire_in: 7 days
     paths:
-      - report/
-    # Không lưu auth_state.json để tránh lộ token
+      - report/**/*
