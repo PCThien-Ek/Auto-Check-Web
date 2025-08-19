@@ -1,60 +1,60 @@
 name: Web Smoke (Playwright + Pytest)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # vẫn cho chạy tay
   schedule:
-    # ví dụ chạy 16:05 UTC mỗi ngày -> đổi theo nhu cầu
-    - cron: '5 16 * * *'
+    - cron: '5 16 * * *'   # 23:05 VN = 16:05 UTC (đổi theo nhu cầu)
 
 jobs:
   smoke:
-    runs-on: windows-latest           # dùng runner miễn phí của GitHub
+    runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
 
-    # Bind secrets vào env (sau đó dùng env.* trong if/run)
     env:
       BASE_URL:        ${{ secrets.BASE_URL }}
       LOGIN_PATH:      ${{ secrets.LOGIN_PATH }}
       LOGIN_EMAIL:     ${{ secrets.LOGIN_EMAIL }}
       LOGIN_PASSWORD:  ${{ secrets.LOGIN_PASSWORD }}
       AUTH_STATE_B64:  ${{ secrets.AUTH_STATE_B64 }}
+      PYTEST_ADDOPTS: "--screenshot=only-on-failure --video=off --trace=off"
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install deps (pip + Playwright)
-        shell: pwsh
+      - name: Install deps
         run: |
           python -m pip install -U pip
           pip install -r requirements.txt
-          python -m playwright install chromium
+          python -m playwright install --with-deps
 
       - name: Restore auth_state.json if provided
         if: ${{ env.AUTH_STATE_B64 != '' }}
-        shell: pwsh
         run: |
-          [IO.File]::WriteAllBytes("auth_state.json",[Convert]::FromBase64String("${{ env.AUTH_STATE_B64 }}"))
-          Write-Host "auth_state.json restored."
+          python - << 'PY'
+          import base64,sys
+          open('auth_state.json','wb').write(base64.b64decode(sys.argv[1].encode()))
+          print('auth_state.json restored.')
+          PY "${{ env.AUTH_STATE_B64 }}"
 
-      - name: Run tests
-        shell: pwsh
+      - name: Run tests on ${{ matrix.browser }}
         run: |
-          pytest -s --headed --maxfail=1 --html=report/smoke.html --self-contained-html
+          pytest -s -q --browser ${{ matrix.browser }} \
+            --html=report/smoke_${{ matrix.browser }}.html --self-contained-html
 
-      - name: Upload report & artifacts
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-report
+          name: smoke-report-${{ matrix.browser }}
           path: |
             report/**
+            **/*-failed*.png
             auth_state.json
-            login_failure.png
           if-no-files-found: ignore
           retention-days: 14
