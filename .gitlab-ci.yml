@@ -8,7 +8,7 @@ stages:
 
 smoke:
   stage: test
-  # NOTE: Dùng shared runner thì KHÔNG cần tags.
+  tags: [win-shell]
   cache:
     paths:
       - .cache/pip
