@@ -1,9 +1,19 @@
 name: Web Smoke (Playwright + Pytest)
 
 on:
-  workflow_dispatch:   # vẫn cho chạy tay
+  workflow_dispatch:               # chạy tay
   schedule:
-    - cron: '5 16 * * *'   # 23:05 VN = 16:05 UTC (đổi theo nhu cầu)
+    - cron: '5 16 * * *'          # 23:05 VN = 16:05 UTC (đổi theo nhu cầu)
+
+# Cấp quyền và tránh chồng run khi deploy Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
 
 jobs:
   smoke:
@@ -24,8 +34,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
+        with:
+          python-version: '3.11'
 
       - name: Install deps
         run: |
@@ -34,20 +46,23 @@ jobs:
           python -m playwright install --with-deps
 
       - name: Restore auth_state.json if provided
-        if: ${{ env.AUTH_STATE_B64 != '' }}
+        # chạy khi biến có giá trị (không rỗng)
+        if: ${{ env.AUTH_STATE_B64 && env.AUTH_STATE_B64 != '' }}
         run: |
-          python - << 'PY'
+          python - << 'PY' "${{ env.AUTH_STATE_B64 }}"
           import base64,sys
           open('auth_state.json','wb').write(base64.b64decode(sys.argv[1].encode()))
           print('auth_state.json restored.')
-          PY "${{ env.AUTH_STATE_B64 }}"
+          PY
 
       - name: Run tests on ${{ matrix.browser }}
         run: |
-          pytest -s -q --browser ${{ matrix.browser }} \
-            --html=report/smoke_${{ matrix.browser }}.html --self-contained-html
+          pytest -vv -rA --durations=10 \
+            --browser ${{ matrix.browser }} \
+            --html=report/smoke_${{ matrix.browser }}.html --self-contained-html \
+            --junitxml=report/junit_${{ matrix.browser }}.xml
 
-      - name: Upload artifacts
+      - name: Upload artifacts (HTML + screenshots + junit)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -58,3 +73,64 @@ jobs:
             auth_state.json
           if-no-files-found: ignore
           retention-days: 14
+
+  publish-report:
+    if: always()
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all browser artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: _reports
+
+      # === Bảng tóm tắt Pass/Fail ngay trong Run summary ===
+      - name: JUnit summary (Run summary)
+        run: |
+          python - <<'PY' >> $GITHUB_STEP_SUMMARY
+          import glob, xml.etree.ElementTree as ET, os
+          files = glob.glob("_reports/**/*.xml", recursive=True) + glob.glob("_reports/**/junit_*.xml", recursive=True)
+          rows = []
+          for f in files:
+              b = os.path.basename(f)
+              if not b.startswith("junit_") or not b.endswith(".xml"):
+                  continue
+              browser = b[len("junit_"):-len(".xml")]
+              try:
+                  t = ET.parse(f).getroot()
+                  tests   = int(t.attrib.get('tests',0))
+                  fails   = int(t.attrib.get('failures',0))
+                  errors  = int(t.attrib.get('errors',0))
+                  skips   = int(t.attrib.get('skipped',0))
+                  passed  = tests - (fails + errors + skips)
+              except Exception as e:
+                  tests=passed=fails=errors=skips=0
+              rows.append((browser, tests, passed, fails+errors, skips))
+          print("## Test Summary")
+          if not rows:
+              print("_No JUnit results found_")
+          else:
+              print("| Browser | Total | Passed | Failed | Skipped |")
+              print("|:--|--:|--:|--:|--:|")
+              for r in sorted(rows):
+                  print(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} |")
+          PY
+
+      # === Chuẩn bị site để publish Pages (HTML + screenshot) ===
+      - name: Flatten to /site
+        run: |
+          mkdir -p site
+          find _reports -name "*.html" -exec cp {} site/ \;
+          find _reports -name "*-failed*.png" -exec cp {} site/ \;
+          # trang index đơn giản
+          echo "# Smoke Reports" > site/index.md
+          for f in site/*.html; do echo "- [$(basename "$f")]($(basename "$f"))" >> site/index.md; done
+
+      - name: Upload report for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
