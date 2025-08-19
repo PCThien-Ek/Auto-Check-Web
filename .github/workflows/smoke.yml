@@ -1,74 +1,60 @@
 name: Web Smoke (Playwright + Pytest)
 
 on:
-  workflow_dispatch:        # cho phép bấm Run workflow bằng tay
+  workflow_dispatch:
   schedule:
-    - cron: '5 */4 * * *'   # chạy 4 giờ/lần (tùy chỉnh)
+    # ví dụ chạy 16:05 UTC mỗi ngày -> đổi theo nhu cầu
+    - cron: '5 16 * * *'
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    runs-on: windows-latest           # dùng runner miễn phí của GitHub
+    timeout-minutes: 30
 
+    # Bind secrets vào env (sau đó dùng env.* trong if/run)
     env:
-      BASE_URL: ${{ secrets.BASE_URL }}
-      LOGIN_PATH: ${{ secrets.LOGIN_PATH }}
-      LOGIN_EMAIL: ${{ secrets.LOGIN_EMAIL }}
-      LOGIN_PASSWORD: ${{ secrets.LOGIN_PASSWORD }}
+      BASE_URL:        ${{ secrets.BASE_URL }}
+      LOGIN_PATH:      ${{ secrets.LOGIN_PATH }}
+      LOGIN_EMAIL:     ${{ secrets.LOGIN_EMAIL }}
+      LOGIN_PASSWORD:  ${{ secrets.LOGIN_PASSWORD }}
+      AUTH_STATE_B64:  ${{ secrets.AUTH_STATE_B64 }}
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
-      - name: Install Python deps
+      - name: Install deps (pip + Playwright)
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install -U pip
           pip install -r requirements.txt
+          python -m playwright install chromium
 
-      # Cài browsers + system deps + headless Xvfb cho Playwright
-      - name: Install Playwright browsers
-        uses: microsoft/playwright-github-action@v1
-
-      # (Tùy chọn) Khôi phục auth_state.json nếu bạn có secret AUTH_STATE_B64
-      - name: Restore auth_state.json
-        if: ${{ secrets.AUTH_STATE_B64 != '' }}
-        env:
-          AUTH_STATE_B64: ${{ secrets.AUTH_STATE_B64 }}
+      - name: Restore auth_state.json if provided
+        if: ${{ env.AUTH_STATE_B64 != '' }}
+        shell: pwsh
         run: |
-          python - <<'PY'
-          import os, base64, pathlib
-          b = os.environ.get('AUTH_STATE_B64','').strip()
-          if b:
-            pathlib.Path('auth_state.json').write_bytes(base64.b64decode(b))
-          else:
-            print("No AUTH_STATE_B64 provided.")
-          PY
+          [IO.File]::WriteAllBytes("auth_state.json",[Convert]::FromBase64String("${{ env.AUTH_STATE_B64 }}"))
+          Write-Host "auth_state.json restored."
 
       - name: Run tests
-        id: smoke
+        shell: pwsh
         run: |
-          pytest -q
-        continue-on-error: true   # luôn chạy bước upload report
+          pytest -s --headed --maxfail=1 --html=report/smoke.html --self-contained-html
 
-      - name: Upload smoke report
+      - name: Upload report & artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: smoke-report
           path: |
             report/**
-            *.png
-            playwright-report/**
-          if-no-files-found: warn
-          retention-days: 7
-
-      # Nếu pytest fail, job sẽ báo đỏ (sau khi đã upload report)
-      - name: Fail job when tests failed
-        if: steps.smoke.outcome != 'success'
-        run: exit 1
+            auth_state.json
+            login_failure.png
+          if-no-files-found: ignore
+          retention-days: 14
